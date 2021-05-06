@@ -254,9 +254,9 @@ rpc_duration_seconds_count 1001
 func verifyTarget1(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 	verifyNumScrapeResults(t, td, mds)
 	m1 := mds[0]
-	// m1 shall only have a gauge
-	if l := len(m1.Metrics); l != 1 {
-		t.Errorf("want 1, but got %v\n", l)
+	// m1 shall only have a gauge + 5 internal scraper metrics
+	if l := len(m1.Metrics); l != 6 {
+		t.Errorf("want 6, but got %v\n", l)
 	}
 
 	// only gauge value is returned from the first scrape
@@ -481,9 +481,9 @@ http_requests_total{method="post",code="500"} 5
 func verifyTarget2(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 	verifyNumScrapeResults(t, td, mds)
 	m1 := mds[0]
-	// m1 shall only have a gauge
-	if l := len(m1.Metrics); l != 1 {
-		t.Errorf("want 1, but got %v\n", l)
+	// m1 shall only have a gaugei + 5 internal scraper metrics
+	if l := len(m1.Metrics); l != 6 {
+		t.Errorf("want 6, but got %v\n", l)
 	}
 
 	// only gauge value is returned from the first scrape
@@ -799,9 +799,9 @@ rpc_duration_seconds_count{foo="no_quantile"} 55
 func verifyTarget3(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 	verifyNumScrapeResults(t, td, mds)
 	m1 := mds[0]
-	// m1 shall only have a gauge
-	if l := len(m1.Metrics); l != 1 {
-		t.Errorf("want 1, but got %v\n", l)
+	// m1 shall only have a gauge + 5 internal scraper metrics
+	if l := len(m1.Metrics); l != 6 {
+		t.Errorf("want 6, but got %v\n", l)
 	}
 
 	// only gauge value is returned from the first scrape
