@@ -18,7 +18,6 @@
 package tests
 
 import (
-	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -42,7 +41,7 @@ func TestIdleMode(t *testing.T) {
 	)
 	defer tc.Stop()
 
-	tc.SetResourceLimits(testbed.ResourceSpec{ExpectedMaxCPU: 4, ExpectedMaxRAM: 55})
+	tc.SetResourceLimits(testbed.ResourceSpec{ExpectedMaxCPU: 4, ExpectedMaxRAM: 70})
 	tc.StartAgent()
 
 	tc.Sleep(tc.Duration)
@@ -85,7 +84,7 @@ func TestBallastMemory(t *testing.T) {
 			return vms > test.ballastSize
 		}, time.Second*2, "VMS must be greater than %d", test.ballastSize)
 
-		assert.True(t, rss <= test.maxRSS, fmt.Sprintf("RSS must be less than or equal to %d", test.maxRSS))
+		assert.LessOrEqual(t, rss, test.maxRSS)
 		tc.Stop()
 	}
 }

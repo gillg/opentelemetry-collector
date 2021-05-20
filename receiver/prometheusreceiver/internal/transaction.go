@@ -31,6 +31,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"go.opentelemetry.io/collector/config"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/obsreport"
 	"go.opentelemetry.io/collector/translator/internaldata"
@@ -67,15 +68,26 @@ type transaction struct {
 	jobsMap              *JobsMap
 	useStartTimeMetric   bool
 	startTimeMetricRegex string
-	receiverName         string
+	receiverID           config.ComponentID
 	ms                   *metadataService
 	node                 *commonpb.Node
 	resource             *resourcepb.Resource
 	metricBuilder        *metricBuilder
+	externalLabels       labels.Labels
 	logger               *zap.Logger
+	obsrecv              *obsreport.Receiver
 }
 
-func newTransaction(ctx context.Context, jobsMap *JobsMap, useStartTimeMetric bool, startTimeMetricRegex string, receiverName string, ms *metadataService, sink consumer.Metrics, logger *zap.Logger) *transaction {
+func newTransaction(
+	ctx context.Context,
+	jobsMap *JobsMap,
+	useStartTimeMetric bool,
+	startTimeMetricRegex string,
+	receiverID config.ComponentID,
+	ms *metadataService,
+	sink consumer.Metrics,
+	externalLabels labels.Labels,
+	logger *zap.Logger) *transaction {
 	return &transaction{
 		id:                   atomic.AddInt64(&idSeq, 1),
 		ctx:                  ctx,
@@ -84,9 +96,11 @@ func newTransaction(ctx context.Context, jobsMap *JobsMap, useStartTimeMetric bo
 		jobsMap:              jobsMap,
 		useStartTimeMetric:   useStartTimeMetric,
 		startTimeMetricRegex: startTimeMetricRegex,
-		receiverName:         receiverName,
+		receiverID:           receiverID,
 		ms:                   ms,
+		externalLabels:       externalLabels,
 		logger:               logger,
+		obsrecv:              obsreport.NewReceiver(obsreport.ReceiverSettings{ReceiverID: receiverID, Transport: transport}),
 	}
 }
 
@@ -108,7 +122,10 @@ func (tr *transaction) Append(ref uint64, ls labels.Labels, t int64, v float64) 
 		return 0, errTransactionAborted
 	default:
 	}
-
+	if len(tr.externalLabels) > 0 {
+		// TODO(jbd): Improve the allocs.
+		ls = append(ls, tr.externalLabels...)
+	}
 	if tr.isNew {
 		if err := tr.initTransaction(ls); err != nil {
 			return 0, err
@@ -154,11 +171,11 @@ func (tr *transaction) Commit() error {
 		return nil
 	}
 
-	ctx := obsreport.StartMetricsReceiveOp(tr.ctx, tr.receiverName, transport)
+	ctx := tr.obsrecv.StartMetricsReceiveOp(tr.ctx)
 	metrics, _, _, err := tr.metricBuilder.Build()
 	if err != nil {
 		// Only error by Build() is errNoDataToBuild, with numReceivedPoints set to zero.
-		obsreport.EndMetricsReceiveOp(ctx, dataformat, 0, err)
+		tr.obsrecv.EndMetricsReceiveOp(ctx, dataformat, 0, err)
 		return err
 	}
 
@@ -169,7 +186,7 @@ func (tr *transaction) Commit() error {
 			// Since we are unable to adjust metrics properly, we will drop them
 			// and return an error.
 			err = errNoStartTimeMetrics
-			obsreport.EndMetricsReceiveOp(ctx, dataformat, 0, err)
+			tr.obsrecv.EndMetricsReceiveOp(ctx, dataformat, 0, err)
 			return err
 		}
 
@@ -182,15 +199,11 @@ func (tr *transaction) Commit() error {
 
 	numPoints := 0
 	if len(metrics) > 0 {
-		md := internaldata.OCToMetrics(internaldata.MetricsData{
-			Node:     tr.node,
-			Resource: tr.resource,
-			Metrics:  metrics,
-		})
+		md := internaldata.OCToMetrics(tr.node, tr.resource, metrics)
 		_, numPoints = md.MetricAndDataPointCount()
 		err = tr.sink.ConsumeMetrics(ctx, md)
 	}
-	obsreport.EndMetricsReceiveOp(ctx, dataformat, numPoints, err)
+	tr.obsrecv.EndMetricsReceiveOp(ctx, dataformat, numPoints, err)
 	return err
 }
 

@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
+	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer/pdata"
 	"go.opentelemetry.io/collector/translator/internaldata"
 )
@@ -57,7 +58,7 @@ type ocExporter struct {
 	metadata       metadata.MD
 }
 
-func newOcExporter(ctx context.Context, cfg *Config) (*ocExporter, error) {
+func newOcExporter(_ context.Context, cfg *Config) (*ocExporter, error) {
 	if cfg.Endpoint == "" {
 		return nil, errors.New("OpenCensus exporter cfg requires an Endpoint")
 	}
@@ -66,22 +67,46 @@ func newOcExporter(ctx context.Context, cfg *Config) (*ocExporter, error) {
 		return nil, errors.New("OpenCensus exporter cfg requires at least one worker")
 	}
 
-	dialOpts, err := cfg.GRPCClientSettings.ToDialOptions()
-	if err != nil {
-		return nil, err
-	}
-
-	var clientConn *grpc.ClientConn
-	if clientConn, err = grpc.DialContext(ctx, cfg.GRPCClientSettings.Endpoint, dialOpts...); err != nil {
-		return nil, err
-	}
-
 	oce := &ocExporter{
-		cfg:            cfg,
-		grpcClientConn: clientConn,
-		metadata:       metadata.New(cfg.GRPCClientSettings.Headers),
+		cfg:      cfg,
+		metadata: metadata.New(cfg.GRPCClientSettings.Headers),
 	}
 	return oce, nil
+}
+
+// start creates the gRPC client Connection
+func (oce *ocExporter) start(ctx context.Context, host component.Host) error {
+	dialOpts, err := oce.cfg.GRPCClientSettings.ToDialOptions(host.GetExtensions())
+	if err != nil {
+		return err
+	}
+	var clientConn *grpc.ClientConn
+	if clientConn, err = grpc.DialContext(ctx, oce.cfg.GRPCClientSettings.Endpoint, dialOpts...); err != nil {
+		return err
+	}
+
+	oce.grpcClientConn = clientConn
+
+	if oce.tracesClients != nil {
+		oce.traceSvcClient = agenttracepb.NewTraceServiceClient(oce.grpcClientConn)
+		// Try to create rpc clients now.
+		for i := 0; i < oce.cfg.NumWorkers; i++ {
+			// Populate the channel with NumWorkers nil RPCs to keep the number of workers
+			// constant in the channel.
+			oce.tracesClients <- nil
+		}
+	}
+
+	if oce.metricsClients != nil {
+		oce.metricsSvcClient = agentmetricspb.NewMetricsServiceClient(oce.grpcClientConn)
+		// Try to create rpc clients now.
+		for i := 0; i < oce.cfg.NumWorkers; i++ {
+			// Populate the channel with NumWorkers nil RPCs to keep the number of workers
+			// constant in the channel.
+			oce.metricsClients <- nil
+		}
+	}
+	return nil
 }
 
 func (oce *ocExporter) shutdown(context.Context) error {
@@ -109,14 +134,7 @@ func newTracesExporter(ctx context.Context, cfg *Config) (*ocExporter, error) {
 	if err != nil {
 		return nil, err
 	}
-	oce.traceSvcClient = agenttracepb.NewTraceServiceClient(oce.grpcClientConn)
-	oce.tracesClients = make(chan *tracesClientWithCancel, cfg.NumWorkers)
-	// Try to create rpc clients now.
-	for i := 0; i < cfg.NumWorkers; i++ {
-		// Populate the channel with NumWorkers nil RPCs to keep the number of workers
-		// constant in the channel.
-		oce.tracesClients <- nil
-	}
+	oce.tracesClients = make(chan *tracesClientWithCancel, oce.cfg.NumWorkers)
 	return oce, nil
 }
 
@@ -125,14 +143,7 @@ func newMetricsExporter(ctx context.Context, cfg *Config) (*ocExporter, error) {
 	if err != nil {
 		return nil, err
 	}
-	oce.metricsSvcClient = agentmetricspb.NewMetricsServiceClient(oce.grpcClientConn)
-	oce.metricsClients = make(chan *metricsClientWithCancel, cfg.NumWorkers)
-	// Try to create rpc clients now.
-	for i := 0; i < cfg.NumWorkers; i++ {
-		// Populate the channel with NumWorkers nil RPCs to keep the number of workers
-		// constant in the channel.
-		oce.metricsClients <- nil
-	}
+	oce.metricsClients = make(chan *metricsClientWithCancel, oce.cfg.NumWorkers)
 	return oce, nil
 }
 
@@ -207,23 +218,19 @@ func (oce *ocExporter) pushMetricsData(_ context.Context, md pdata.Metrics) erro
 		}
 	}
 
-	ocmds := internaldata.MetricsToOC(md)
-	for _, ocmd := range ocmds {
+	rms := md.ResourceMetrics()
+	for i := 0; i < rms.Len(); i++ {
+		ocReq := agentmetricspb.ExportMetricsServiceRequest{}
+		ocReq.Node, ocReq.Resource, ocReq.Metrics = internaldata.ResourceMetricsToOC(rms.At(i))
+
 		// This is a hack because OC protocol expects a Node for the initial message.
-		node := ocmd.Node
-		if node == nil {
-			node = &commonpb.Node{}
+		if ocReq.Node == nil {
+			ocReq.Node = &commonpb.Node{}
 		}
-		resource := ocmd.Resource
-		if resource == nil {
-			resource = &resourcepb.Resource{}
+		if ocReq.Resource == nil {
+			ocReq.Resource = &resourcepb.Resource{}
 		}
-		req := &agentmetricspb.ExportMetricsServiceRequest{
-			Metrics:  ocmd.Metrics,
-			Resource: resource,
-			Node:     node,
-		}
-		if err := mClient.msec.Send(req); err != nil {
+		if err := mClient.msec.Send(&ocReq); err != nil {
 			// Error received, cancel the context used to create the RPC to free all resources,
 			// put back nil to keep the number of workers constant.
 			mClient.cancel()

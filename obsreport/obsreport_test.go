@@ -36,13 +36,13 @@ import (
 )
 
 const (
-	receiver  = "fakeReicever"
-	scraper   = "fakeScraper"
 	transport = "fakeTransport"
 	format    = "fakeFormat"
 )
 
 var (
+	receiver  = config.NewID("fakeReicever")
+	scraper   = config.NewID("fakeScraper")
 	processor = config.NewID("fakeProcessor")
 	exporter  = config.NewID("fakeExporter")
 
@@ -109,10 +109,11 @@ func TestReceiveTraceDataOp(t *testing.T) {
 	}
 	rcvdSpans := []int{13, 42}
 	for i, param := range params {
-		ctx := obsreport.StartTraceDataReceiveOp(receiverCtx, receiver, param.transport)
+		rec := obsreport.NewReceiver(obsreport.ReceiverSettings{ReceiverID: receiver, Transport: param.transport})
+		ctx := rec.StartTraceDataReceiveOp(receiverCtx)
 		assert.NotNil(t, ctx)
 
-		obsreport.EndTraceDataReceiveOp(
+		rec.EndTraceDataReceiveOp(
 			ctx,
 			format,
 			rcvdSpans[i],
@@ -124,7 +125,7 @@ func TestReceiveTraceDataOp(t *testing.T) {
 
 	var acceptedSpans, refusedSpans int
 	for i, span := range spans {
-		assert.Equal(t, "receiver/"+receiver+"/TraceDataReceived", span.Name)
+		assert.Equal(t, "receiver/"+receiver.String()+"/TraceDataReceived", span.Name)
 		switch params[i].err {
 		case nil:
 			acceptedSpans += rcvdSpans[i]
@@ -169,10 +170,11 @@ func TestReceiveLogsOp(t *testing.T) {
 	}
 	rcvdLogRecords := []int{13, 42}
 	for i, param := range params {
-		ctx := obsreport.StartLogsReceiveOp(receiverCtx, receiver, param.transport)
+		rec := obsreport.NewReceiver(obsreport.ReceiverSettings{ReceiverID: receiver, Transport: param.transport})
+		ctx := rec.StartLogsReceiveOp(receiverCtx)
 		assert.NotNil(t, ctx)
 
-		obsreport.EndLogsReceiveOp(
+		rec.EndLogsReceiveOp(
 			ctx,
 			format,
 			rcvdLogRecords[i],
@@ -184,7 +186,7 @@ func TestReceiveLogsOp(t *testing.T) {
 
 	var acceptedLogRecords, refusedLogRecords int
 	for i, span := range spans {
-		assert.Equal(t, "receiver/"+receiver+"/LogsReceived", span.Name)
+		assert.Equal(t, "receiver/"+receiver.String()+"/LogsReceived", span.Name)
 		switch params[i].err {
 		case nil:
 			acceptedLogRecords += rcvdLogRecords[i]
@@ -229,10 +231,11 @@ func TestReceiveMetricsOp(t *testing.T) {
 	}
 	rcvdMetricPts := []int{23, 29}
 	for i, param := range params {
-		ctx := obsreport.StartMetricsReceiveOp(receiverCtx, receiver, param.transport)
+		rec := obsreport.NewReceiver(obsreport.ReceiverSettings{ReceiverID: receiver, Transport: param.transport})
+		ctx := rec.StartMetricsReceiveOp(receiverCtx)
 		assert.NotNil(t, ctx)
 
-		obsreport.EndMetricsReceiveOp(
+		rec.EndMetricsReceiveOp(
 			ctx,
 			format,
 			rcvdMetricPts[i],
@@ -244,7 +247,7 @@ func TestReceiveMetricsOp(t *testing.T) {
 
 	var acceptedMetricPoints, refusedMetricPoints int
 	for i, span := range spans {
-		assert.Equal(t, "receiver/"+receiver+"/MetricsReceived", span.Name)
+		assert.Equal(t, "receiver/"+receiver.String()+"/MetricsReceived", span.Name)
 		switch params[i].err {
 		case nil:
 			acceptedMetricPoints += rcvdMetricPts[i]
@@ -301,7 +304,7 @@ func TestScrapeMetricsDataOp(t *testing.T) {
 
 	var scrapedMetricPoints, erroredMetricPoints int
 	for i, span := range spans {
-		assert.Equal(t, "scraper/"+receiver+"/"+scraper+"/MetricsScraped", span.Name)
+		assert.Equal(t, "scraper/"+receiver.String()+"/"+scraper.String()+"/MetricsScraped", span.Name)
 		switch errParams[i] {
 		case nil:
 			scrapedMetricPoints += scrapedMetricPts[i]
@@ -499,14 +502,13 @@ func TestReceiveWithLongLivedCtx(t *testing.T) {
 	for _, op := range ops {
 		// Use a new context on each operation to simulate distinct operations
 		// under the same long lived context.
-		ctx := obsreport.StartTraceDataReceiveOp(
+		rec := obsreport.NewReceiver(obsreport.ReceiverSettings{ReceiverID: receiver, Transport: transport})
+		ctx := rec.StartTraceDataReceiveOp(
 			longLivedCtx,
-			receiver,
-			transport,
 			obsreport.WithLongLivedCtx())
 		assert.NotNil(t, ctx)
 
-		obsreport.EndTraceDataReceiveOp(
+		rec.EndTraceDataReceiveOp(
 			ctx,
 			format,
 			op.numSpans,
@@ -523,7 +525,7 @@ func TestReceiveWithLongLivedCtx(t *testing.T) {
 		assert.Equal(t, trace.LinkTypeParent, link.Type)
 		assert.Equal(t, parentSpan.SpanContext().TraceID, link.TraceID)
 		assert.Equal(t, parentSpan.SpanContext().SpanID, link.SpanID)
-		assert.Equal(t, "receiver/"+receiver+"/TraceDataReceived", span.Name)
+		assert.Equal(t, "receiver/"+receiver.String()+"/TraceDataReceived", span.Name)
 		assert.Equal(t, transport, span.Attributes[obsreport.TransportKey])
 		switch ops[i].err {
 		case nil:

@@ -100,8 +100,9 @@ func (mb *MockBackend) Stop() {
 		log.Printf("Stopping mock backend...")
 
 		mb.logFile.Close()
-		mb.receiver.Stop()
-
+		if err := mb.receiver.Stop(); err != nil {
+			log.Printf("Failed to stop receiver: %v", err)
+		}
 		// Print stats.
 		log.Printf("Stopped backend. %s", mb.GetStats())
 	})
@@ -165,6 +166,10 @@ type MockTraceConsumer struct {
 	backend          *MockBackend
 }
 
+func (tc *MockTraceConsumer) Capabilities() consumer.Capabilities {
+	return consumer.Capabilities{MutatesData: false}
+}
+
 func (tc *MockTraceConsumer) ConsumeTraces(_ context.Context, td pdata.Traces) error {
 	tc.numSpansReceived.Add(uint64(td.SpanCount()))
 
@@ -208,6 +213,10 @@ type MockMetricConsumer struct {
 	backend            *MockBackend
 }
 
+func (mc *MockMetricConsumer) Capabilities() consumer.Capabilities {
+	return consumer.Capabilities{MutatesData: false}
+}
+
 func (mc *MockMetricConsumer) ConsumeMetrics(_ context.Context, md pdata.Metrics) error {
 	_, dataPoints := md.MetricAndDataPointCount()
 	mc.numMetricsReceived.Add(uint64(dataPoints))
@@ -230,9 +239,13 @@ type MockLogConsumer struct {
 	backend               *MockBackend
 }
 
-func (mc *MockLogConsumer) ConsumeLogs(_ context.Context, ld pdata.Logs) error {
+func (lc *MockLogConsumer) Capabilities() consumer.Capabilities {
+	return consumer.Capabilities{MutatesData: false}
+}
+
+func (lc *MockLogConsumer) ConsumeLogs(_ context.Context, ld pdata.Logs) error {
 	recordCount := ld.LogRecordCount()
-	mc.numLogRecordsReceived.Add(uint64(recordCount))
-	mc.backend.ConsumeLogs(ld)
+	lc.numLogRecordsReceived.Add(uint64(recordCount))
+	lc.backend.ConsumeLogs(ld)
 	return nil
 }

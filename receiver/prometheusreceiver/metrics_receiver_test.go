@@ -28,6 +28,7 @@ import (
 	"testing"
 
 	commonpb "github.com/census-instrumentation/opencensus-proto/gen-go/agent/common/v1"
+	agentmetricspb "github.com/census-instrumentation/opencensus-proto/gen-go/agent/metrics/v1"
 	metricspb "github.com/census-instrumentation/opencensus-proto/gen-go/metrics/v1"
 	resourcepb "github.com/census-instrumentation/opencensus-proto/gen-go/resource/v1"
 	gokitlog "github.com/go-kit/kit/log"
@@ -112,7 +113,7 @@ type testData struct {
 	pages        []mockPrometheusResponse
 	node         *commonpb.Node
 	resource     *resourcepb.Resource
-	validateFunc func(t *testing.T, td *testData, result []internaldata.MetricsData)
+	validateFunc func(t *testing.T, td *testData, result []*agentmetricspb.ExportMetricsServiceRequest)
 }
 
 // setupMockPrometheus to create a mocked prometheus based on targets, returning the server and a prometheus exporting
@@ -170,7 +171,7 @@ func setupMockPrometheus(tds ...*testData) (*mockPrometheus, *promcfg.Config, er
 	return mp, pCfg, err
 }
 
-func verifyNumScrapeResults(t *testing.T, td *testData, mds []internaldata.MetricsData) {
+func verifyNumScrapeResults(t *testing.T, td *testData, mds []*agentmetricspb.ExportMetricsServiceRequest) {
 	want := 0
 	for _, p := range td.pages {
 		if p.code == 200 {
@@ -182,7 +183,7 @@ func verifyNumScrapeResults(t *testing.T, td *testData, mds []internaldata.Metri
 	}
 }
 
-func doCompare(name string, t *testing.T, want, got interface{}) {
+func doCompare(name string, t *testing.T, want, got *agentmetricspb.ExportMetricsServiceRequest) {
 	t.Run(name, func(t *testing.T) {
 		assert.EqualValues(t, want, got)
 	})
@@ -251,41 +252,147 @@ rpc_duration_seconds_sum 5002
 rpc_duration_seconds_count 1001
 `
 
-func verifyTarget1(t *testing.T, td *testData, mds []internaldata.MetricsData) {
+func verifyTarget1(t *testing.T, td *testData, mds []*agentmetricspb.ExportMetricsServiceRequest) {
 	verifyNumScrapeResults(t, td, mds)
 	m1 := mds[0]
-	// m1 shall only have a gauge + 5 internal scraper metrics
-	if l := len(m1.Metrics); l != 6 {
-		t.Errorf("want 6, but got %v\n", l)
+	if l := len(m1.Metrics); l != 9 {
+		t.Errorf("want 9, but got %v\n", l)
 	}
 
-	// only gauge value is returned from the first scrape
-	wantG1 := &metricspb.Metric{
-		MetricDescriptor: &metricspb.MetricDescriptor{
-			Name:        "go_threads",
-			Description: "Number of OS threads created",
-			Type:        metricspb.MetricDescriptor_GAUGE_DOUBLE,
-		},
-		Timeseries: []*metricspb.TimeSeries{
+	ts1 := m1.Metrics[0].Timeseries[0].Points[0].Timestamp
+	want1 := &agentmetricspb.ExportMetricsServiceRequest{
+		Node:     td.node,
+		Resource: td.resource,
+		Metrics: []*metricspb.Metric{
 			{
-				Points: []*metricspb.Point{
-					{Value: &metricspb.Point_DoubleValue{DoubleValue: 19.0}},
+				MetricDescriptor: &metricspb.MetricDescriptor{
+					Name:        "go_threads",
+					Description: "Number of OS threads created",
+					Type:        metricspb.MetricDescriptor_GAUGE_DOUBLE},
+				Timeseries: []*metricspb.TimeSeries{
+					{
+						Points: []*metricspb.Point{
+							{Timestamp: ts1, Value: &metricspb.Point_DoubleValue{DoubleValue: 19.0}},
+						},
+					},
+				},
+			},
+			{
+				MetricDescriptor: &metricspb.MetricDescriptor{
+					Name:        "http_requests_total",
+					Description: "The total number of HTTP requests.",
+					Type:        metricspb.MetricDescriptor_CUMULATIVE_DOUBLE,
+					LabelKeys:   []*metricspb.LabelKey{{Key: "code"}, {Key: "method"}},
+				},
+				Timeseries: []*metricspb.TimeSeries{
+					{
+						StartTimestamp: ts1,
+						LabelValues: []*metricspb.LabelValue{
+							{Value: "200", HasValue: true},
+							{Value: "post", HasValue: true},
+						},
+						Points: []*metricspb.Point{
+							{Timestamp: ts1, Value: &metricspb.Point_DoubleValue{DoubleValue: 100.0}},
+						},
+					},
+					{
+						StartTimestamp: ts1,
+						LabelValues: []*metricspb.LabelValue{
+							{Value: "400", HasValue: true},
+							{Value: "post", HasValue: true},
+						},
+						Points: []*metricspb.Point{
+							{Timestamp: ts1, Value: &metricspb.Point_DoubleValue{DoubleValue: 5.0}},
+						},
+					},
+				},
+			},
+			{
+				MetricDescriptor: &metricspb.MetricDescriptor{
+					Name:        "http_request_duration_seconds",
+					Type:        metricspb.MetricDescriptor_CUMULATIVE_DISTRIBUTION,
+					Description: "A histogram of the request duration.",
+					Unit:        "s",
+				},
+				Timeseries: []*metricspb.TimeSeries{
+					{
+						StartTimestamp: ts1,
+						Points: []*metricspb.Point{
+							{
+								Timestamp: ts1,
+								Value: &metricspb.Point_DistributionValue{
+									DistributionValue: &metricspb.DistributionValue{
+										BucketOptions: &metricspb.DistributionValue_BucketOptions{
+											Type: &metricspb.DistributionValue_BucketOptions_Explicit_{
+												Explicit: &metricspb.DistributionValue_BucketOptions_Explicit{
+													Bounds: []float64{0.05, 0.5, 1},
+												},
+											},
+										},
+										Count: 2500,
+										Sum:   5000.0,
+										Buckets: []*metricspb.DistributionValue_Bucket{
+											{Count: 1000},
+											{Count: 500},
+											{Count: 500},
+											{Count: 500},
+										},
+									}},
+							},
+						},
+					},
+				},
+			},
+			{
+				MetricDescriptor: &metricspb.MetricDescriptor{
+					Name:        "rpc_duration_seconds",
+					Type:        metricspb.MetricDescriptor_SUMMARY,
+					Description: "A summary of the RPC duration in seconds.",
+					Unit:        "s",
+				},
+				Timeseries: []*metricspb.TimeSeries{
+					{
+						StartTimestamp: ts1,
+						Points: []*metricspb.Point{
+							{
+								Timestamp: ts1,
+								Value: &metricspb.Point_SummaryValue{
+									SummaryValue: &metricspb.SummaryValue{
+										Sum:   &wrappers.DoubleValue{Value: 5000},
+										Count: &wrappers.Int64Value{Value: 1000},
+										Snapshot: &metricspb.SummaryValue_Snapshot{
+											PercentileValues: []*metricspb.SummaryValue_Snapshot_ValueAtPercentile{
+												{
+													Percentile: 1,
+													Value:      1,
+												},
+												{
+													Percentile: 90,
+													Value:      5,
+												},
+												{
+													Percentile: 99,
+													Value:      8,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
 	}
-	gotG1 := m1.Metrics[0]
-	// relying on the timestamps from gagues as startTimestamps
-	ts1 := gotG1.Timeseries[0].Points[0].Timestamp
-	// set this timestamp to wantG1
-	wantG1.Timeseries[0].Points[0].Timestamp = ts1
-	doCompare("scrape1", t, wantG1, gotG1)
+
+	doCompare("scrape1", t, want1, m1)
 
 	// verify the 2nd metricData
 	m2 := mds[1]
 	ts2 := m2.Metrics[0].Timeseries[0].Points[0].Timestamp
 
-	want2 := &internaldata.MetricsData{
+	want2 := &agentmetricspb.ExportMetricsServiceRequest{
 		Node:     td.node,
 		Resource: td.resource,
 		Metrics: []*metricspb.Metric{
@@ -332,7 +439,7 @@ func verifyTarget1(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 							{Value: "post", HasValue: true},
 						},
 						Points: []*metricspb.Point{
-							{Timestamp: ts2, Value: &metricspb.Point_DoubleValue{DoubleValue: 99.0}},
+							{Timestamp: ts2, Value: &metricspb.Point_DoubleValue{DoubleValue: 199.0}},
 						},
 					},
 					{
@@ -342,7 +449,7 @@ func verifyTarget1(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 							{Value: "post", HasValue: true},
 						},
 						Points: []*metricspb.Point{
-							{Timestamp: ts2, Value: &metricspb.Point_DoubleValue{DoubleValue: 7.0}},
+							{Timestamp: ts2, Value: &metricspb.Point_DoubleValue{DoubleValue: 12.0}},
 						},
 					},
 				},
@@ -369,13 +476,13 @@ func verifyTarget1(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 												},
 											},
 										},
-										Count: 100,
-										Sum:   50.0,
+										Count: 2600,
+										Sum:   5050.0,
 										Buckets: []*metricspb.DistributionValue_Bucket{
-											{Count: 100},
-											{Count: 0},
-											{Count: 0},
-											{Count: 0},
+											{Count: 1100},
+											{Count: 500},
+											{Count: 500},
+											{Count: 500},
 										},
 									}},
 							},
@@ -398,8 +505,8 @@ func verifyTarget1(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 								Timestamp: ts2,
 								Value: &metricspb.Point_SummaryValue{
 									SummaryValue: &metricspb.SummaryValue{
-										Sum:   &wrappers.DoubleValue{Value: 2},
-										Count: &wrappers.Int64Value{Value: 1},
+										Sum:   &wrappers.DoubleValue{Value: 5002},
+										Count: &wrappers.Int64Value{Value: 1001},
 										Snapshot: &metricspb.SummaryValue_Snapshot{
 											PercentileValues: []*metricspb.SummaryValue_Snapshot_ValueAtPercentile{
 												{
@@ -486,7 +593,7 @@ func verifyTarget1(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 		},
 	}
 
-	doCompare("scrape2", t, want2, &m2)
+	doCompare("scrape2", t, want2, m2)
 }
 
 // target2 is going to have 5 pages, and there's a newly appeared item from the 2nd page. we are expecting the new
@@ -553,40 +660,72 @@ http_requests_total{method="post",code="400"} 59
 http_requests_total{method="post",code="500"} 5
 `
 
-func verifyTarget2(t *testing.T, td *testData, mds []internaldata.MetricsData) {
+func verifyTarget2(t *testing.T, td *testData, mds []*agentmetricspb.ExportMetricsServiceRequest) {
 	verifyNumScrapeResults(t, td, mds)
 	m1 := mds[0]
-	// m1 shall only have a gaugei + 5 internal scraper metrics
-	if l := len(m1.Metrics); l != 6 {
+	if l := len(m1.Metrics); l != 7 {
 		t.Errorf("want 6, but got %v\n", l)
 	}
 
-	// only gauge value is returned from the first scrape
-	wantG1 := &metricspb.Metric{
-		MetricDescriptor: &metricspb.MetricDescriptor{
-			Name:        "go_threads",
-			Description: "Number of OS threads created",
-			Type:        metricspb.MetricDescriptor_GAUGE_DOUBLE,
-		},
-		Timeseries: []*metricspb.TimeSeries{
+	ts1 := m1.Metrics[0].Timeseries[0].Points[0].Timestamp
+	want1 := &agentmetricspb.ExportMetricsServiceRequest{
+		Node:     td.node,
+		Resource: td.resource,
+		Metrics: []*metricspb.Metric{
 			{
-				Points: []*metricspb.Point{
-					{Value: &metricspb.Point_DoubleValue{DoubleValue: 18.0}},
+				MetricDescriptor: &metricspb.MetricDescriptor{
+					Name:        "go_threads",
+					Description: "Number of OS threads created",
+					Type:        metricspb.MetricDescriptor_GAUGE_DOUBLE,
+				},
+				Timeseries: []*metricspb.TimeSeries{
+					{
+						Points: []*metricspb.Point{
+							{Timestamp: ts1, Value: &metricspb.Point_DoubleValue{DoubleValue: 18.0}},
+						},
+					},
+				},
+			},
+			{
+				MetricDescriptor: &metricspb.MetricDescriptor{
+					Name:        "http_requests_total",
+					Description: "The total number of HTTP requests.",
+					Type:        metricspb.MetricDescriptor_CUMULATIVE_DOUBLE,
+					LabelKeys:   []*metricspb.LabelKey{{Key: "code"}, {Key: "method"}},
+				},
+				Timeseries: []*metricspb.TimeSeries{
+					{
+						StartTimestamp: ts1,
+						LabelValues: []*metricspb.LabelValue{
+							{Value: "200", HasValue: true},
+							{Value: "post", HasValue: true},
+						},
+						Points: []*metricspb.Point{
+							{Timestamp: ts1, Value: &metricspb.Point_DoubleValue{DoubleValue: 10.0}},
+						},
+					},
+					{
+						StartTimestamp: ts1,
+						LabelValues: []*metricspb.LabelValue{
+							{Value: "400", HasValue: true},
+							{Value: "post", HasValue: true},
+						},
+						Points: []*metricspb.Point{
+							{Timestamp: ts1, Value: &metricspb.Point_DoubleValue{DoubleValue: 50.0}},
+						},
+					},
 				},
 			},
 		},
 	}
-	gotG1 := m1.Metrics[0]
-	ts1 := gotG1.Timeseries[0].Points[0].Timestamp
-	// set this timestamp to wantG1
-	wantG1.Timeseries[0].Points[0].Timestamp = ts1
-	doCompare("scrape1", t, wantG1, gotG1)
+
+	doCompare("scrape1", t, want1, m1)
 
 	// verify the 2nd metricData
 	m2 := mds[1]
 	ts2 := m2.Metrics[0].Timeseries[0].Points[0].Timestamp
 
-	want2 := &internaldata.MetricsData{
+	want2 := &agentmetricspb.ExportMetricsServiceRequest{
 		Node:     td.node,
 		Resource: td.resource,
 		Metrics: []*metricspb.Metric{
@@ -634,7 +773,7 @@ func verifyTarget2(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 							{Value: "post", HasValue: true},
 						},
 						Points: []*metricspb.Point{
-							{Timestamp: ts2, Value: &metricspb.Point_DoubleValue{DoubleValue: 40.0}},
+							{Timestamp: ts2, Value: &metricspb.Point_DoubleValue{DoubleValue: 50.0}},
 						},
 					},
 					{
@@ -644,7 +783,17 @@ func verifyTarget2(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 							{Value: "post", HasValue: true},
 						},
 						Points: []*metricspb.Point{
-							{Timestamp: ts2, Value: &metricspb.Point_DoubleValue{DoubleValue: 10.0}},
+							{Timestamp: ts2, Value: &metricspb.Point_DoubleValue{DoubleValue: 60.0}},
+						},
+					},
+					{
+						StartTimestamp: ts2,
+						LabelValues: []*metricspb.LabelValue{
+							{Value: "500", HasValue: true},
+							{Value: "post", HasValue: true},
+						},
+						Points: []*metricspb.Point{
+							{Timestamp: ts2, Value: &metricspb.Point_DoubleValue{DoubleValue: 3.0}},
 						},
 					},
 				},
@@ -711,14 +860,14 @@ func verifyTarget2(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 			},
 		},
 	}
-	doCompare("scrape2", t, want2, &m2)
+	doCompare("scrape2", t, want2, m2)
 
 	// verify the 3rd metricData, with the new code=500 counter which first appeared on 2nd run
 	m3 := mds[2]
 	// its start timestamp shall be from the 2nd run
 	ts3 := m3.Metrics[0].Timeseries[0].Points[0].Timestamp
 
-	want3 := &internaldata.MetricsData{
+	want3 := &agentmetricspb.ExportMetricsServiceRequest{
 		Node:     td.node,
 		Resource: td.resource,
 		Metrics: []*metricspb.Metric{
@@ -766,7 +915,7 @@ func verifyTarget2(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 							{Value: "post", HasValue: true},
 						},
 						Points: []*metricspb.Point{
-							{Timestamp: ts3, Value: &metricspb.Point_DoubleValue{DoubleValue: 40.0}},
+							{Timestamp: ts3, Value: &metricspb.Point_DoubleValue{DoubleValue: 50.0}},
 						},
 					},
 					{
@@ -776,7 +925,7 @@ func verifyTarget2(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 							{Value: "post", HasValue: true},
 						},
 						Points: []*metricspb.Point{
-							{Timestamp: ts3, Value: &metricspb.Point_DoubleValue{DoubleValue: 10.0}},
+							{Timestamp: ts3, Value: &metricspb.Point_DoubleValue{DoubleValue: 60.0}},
 						},
 					},
 					{
@@ -786,7 +935,7 @@ func verifyTarget2(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 							{Value: "post", HasValue: true},
 						},
 						Points: []*metricspb.Point{
-							{Timestamp: ts3, Value: &metricspb.Point_DoubleValue{DoubleValue: 2.0}},
+							{Timestamp: ts3, Value: &metricspb.Point_DoubleValue{DoubleValue: 5.0}},
 						},
 					},
 				},
@@ -853,13 +1002,13 @@ func verifyTarget2(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 			},
 		},
 	}
-	doCompare("scrape3", t, want3, &m3)
+	doCompare("scrape3", t, want3, m3)
 
 	// verify the 4th metricData which reset happens, all cumulative types shall be absent
 	m4 := mds[3]
 	ts4 := m4.Metrics[0].Timeseries[0].Points[0].Timestamp
 
-	want4 := &internaldata.MetricsData{
+	want4 := &agentmetricspb.ExportMetricsServiceRequest{
 		Node:     td.node,
 		Resource: td.resource,
 		Metrics: []*metricspb.Metric{
@@ -952,16 +1101,56 @@ func verifyTarget2(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 					},
 				},
 			},
+			{
+				MetricDescriptor: &metricspb.MetricDescriptor{
+					Name:        "http_requests_total",
+					Description: "The total number of HTTP requests.",
+					Type:        metricspb.MetricDescriptor_CUMULATIVE_DOUBLE,
+					LabelKeys:   []*metricspb.LabelKey{{Key: "code"}, {Key: "method"}},
+				},
+				Timeseries: []*metricspb.TimeSeries{
+					{
+						StartTimestamp: ts4,
+						LabelValues: []*metricspb.LabelValue{
+							{Value: "200", HasValue: true},
+							{Value: "post", HasValue: true},
+						},
+						Points: []*metricspb.Point{
+							{Timestamp: ts4, Value: &metricspb.Point_DoubleValue{DoubleValue: 49.0}},
+						},
+					},
+					{
+						StartTimestamp: ts4,
+						LabelValues: []*metricspb.LabelValue{
+							{Value: "400", HasValue: true},
+							{Value: "post", HasValue: true},
+						},
+						Points: []*metricspb.Point{
+							{Timestamp: ts4, Value: &metricspb.Point_DoubleValue{DoubleValue: 59.0}},
+						},
+					},
+					{
+						StartTimestamp: ts4,
+						LabelValues: []*metricspb.LabelValue{
+							{Value: "500", HasValue: true},
+							{Value: "post", HasValue: true},
+						},
+						Points: []*metricspb.Point{
+							{Timestamp: ts4, Value: &metricspb.Point_DoubleValue{DoubleValue: 3.0}},
+						},
+					},
+				},
+			},
 		},
 	}
-	doCompare("scrape4", t, want4, &m4)
+	doCompare("scrape4", t, want4, m4)
 
 	// verify the 4th metricData which reset happens, all cumulative types shall be absent
 	m5 := mds[4]
 	// its start timestamp shall be from the 3rd run
 	ts5 := m5.Metrics[0].Timeseries[0].Points[0].Timestamp
 
-	want5 := &internaldata.MetricsData{
+	want5 := &agentmetricspb.ExportMetricsServiceRequest{
 		Node:     td.node,
 		Resource: td.resource,
 		Metrics: []*metricspb.Metric{
@@ -1009,7 +1198,7 @@ func verifyTarget2(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 							{Value: "post", HasValue: true},
 						},
 						Points: []*metricspb.Point{
-							{Timestamp: ts5, Value: &metricspb.Point_DoubleValue{DoubleValue: 1.0}},
+							{Timestamp: ts5, Value: &metricspb.Point_DoubleValue{DoubleValue: 50.0}},
 						},
 					},
 					{
@@ -1019,7 +1208,7 @@ func verifyTarget2(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 							{Value: "post", HasValue: true},
 						},
 						Points: []*metricspb.Point{
-							{Timestamp: ts5, Value: &metricspb.Point_DoubleValue{DoubleValue: 0.0}},
+							{Timestamp: ts5, Value: &metricspb.Point_DoubleValue{DoubleValue: 59.0}},
 						},
 					},
 					{
@@ -1029,7 +1218,7 @@ func verifyTarget2(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 							{Value: "post", HasValue: true},
 						},
 						Points: []*metricspb.Point{
-							{Timestamp: ts5, Value: &metricspb.Point_DoubleValue{DoubleValue: 2.0}},
+							{Timestamp: ts5, Value: &metricspb.Point_DoubleValue{DoubleValue: 5.0}},
 						},
 					},
 				},
@@ -1096,7 +1285,7 @@ func verifyTarget2(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 			},
 		},
 	}
-	doCompare("scrape5", t, want5, &m5)
+	doCompare("scrape5", t, want5, m5)
 }
 
 // target3 for complicated data types, including summaries and histograms. one of the summary and histogram have only
@@ -1171,39 +1360,147 @@ rpc_duration_seconds_sum{foo="no_quantile"} 101
 rpc_duration_seconds_count{foo="no_quantile"} 55
 `
 
-func verifyTarget3(t *testing.T, td *testData, mds []internaldata.MetricsData) {
+func verifyTarget3(t *testing.T, td *testData, mds []*agentmetricspb.ExportMetricsServiceRequest) {
 	verifyNumScrapeResults(t, td, mds)
 	m1 := mds[0]
-	// m1 shall only have a gauge + 5 internal scraper metrics
-	if l := len(m1.Metrics); l != 6 {
-		t.Errorf("want 6, but got %v\n", l)
+	if l := len(m1.Metrics); l != 8 {
+		t.Errorf("want 8, but got %v\n", l)
 	}
 
-	// only gauge value is returned from the first scrape
-	wantG1 := &metricspb.Metric{
-		MetricDescriptor: &metricspb.MetricDescriptor{
-			Name:        "go_threads",
-			Description: "Number of OS threads created",
-			Type:        metricspb.MetricDescriptor_GAUGE_DOUBLE},
-		Timeseries: []*metricspb.TimeSeries{
+	ts1 := m1.Metrics[1].Timeseries[0].Points[0].Timestamp
+	want1 := &agentmetricspb.ExportMetricsServiceRequest{
+		Node:     td.node,
+		Resource: td.resource,
+		Metrics: []*metricspb.Metric{
 			{
-				Points: []*metricspb.Point{
-					{Value: &metricspb.Point_DoubleValue{DoubleValue: 18.0}},
+				MetricDescriptor: &metricspb.MetricDescriptor{
+					Name:        "go_threads",
+					Description: "Number of OS threads created",
+					Type:        metricspb.MetricDescriptor_GAUGE_DOUBLE,
+				},
+				Timeseries: []*metricspb.TimeSeries{
+					{
+						Points: []*metricspb.Point{
+							{Timestamp: ts1, Value: &metricspb.Point_DoubleValue{DoubleValue: 18.0}},
+						},
+					},
+				},
+			},
+			{
+				MetricDescriptor: &metricspb.MetricDescriptor{
+					Name:        "http_request_duration_seconds",
+					Description: "A histogram of the request duration.",
+					Unit:        "s",
+					Type:        metricspb.MetricDescriptor_CUMULATIVE_DISTRIBUTION,
+				},
+				Timeseries: []*metricspb.TimeSeries{
+					{
+						StartTimestamp: ts1,
+						Points: []*metricspb.Point{
+							{
+								Timestamp: ts1,
+								Value: &metricspb.Point_DistributionValue{
+									DistributionValue: &metricspb.DistributionValue{
+										BucketOptions: &metricspb.DistributionValue_BucketOptions{
+											Type: &metricspb.DistributionValue_BucketOptions_Explicit_{
+												Explicit: &metricspb.DistributionValue_BucketOptions_Explicit{
+													Bounds: []float64{0.2, 0.5, 1},
+												},
+											},
+										},
+										Count: 13003,
+										Sum:   50000,
+										Buckets: []*metricspb.DistributionValue_Bucket{
+											{Count: 10000},
+											{Count: 1000},
+											{Count: 1001},
+											{Count: 1002},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				MetricDescriptor: &metricspb.MetricDescriptor{
+					Name:        "rpc_duration_seconds",
+					Type:        metricspb.MetricDescriptor_SUMMARY,
+					LabelKeys:   []*metricspb.LabelKey{{Key: "foo"}},
+					Description: "A summary of the RPC duration in seconds.",
+					Unit:        "s",
+				},
+				Timeseries: []*metricspb.TimeSeries{
+					{
+						StartTimestamp: ts1,
+						LabelValues:    []*metricspb.LabelValue{{Value: "bar", HasValue: true}},
+						Points: []*metricspb.Point{
+							{
+								Timestamp: ts1,
+								Value: &metricspb.Point_SummaryValue{
+									SummaryValue: &metricspb.SummaryValue{
+										Sum:   &wrappers.DoubleValue{Value: 8000},
+										Count: &wrappers.Int64Value{Value: 900},
+										Snapshot: &metricspb.SummaryValue_Snapshot{
+											PercentileValues: []*metricspb.SummaryValue_Snapshot_ValueAtPercentile{
+												{
+													Percentile: 1,
+													Value:      31,
+												},
+												{
+													Percentile: 5,
+													Value:      35,
+												},
+												{
+													Percentile: 50,
+													Value:      47,
+												},
+												{
+													Percentile: 90,
+													Value:      70,
+												},
+												{
+													Percentile: 99,
+													Value:      76,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					{
+						StartTimestamp: ts1,
+						LabelValues:    []*metricspb.LabelValue{{Value: "no_quantile", HasValue: true}},
+						Points: []*metricspb.Point{
+							{
+								Timestamp: ts1,
+								Value: &metricspb.Point_SummaryValue{
+									SummaryValue: &metricspb.SummaryValue{
+										Sum:   &wrappers.DoubleValue{Value: 100},
+										Count: &wrappers.Int64Value{Value: 50},
+										Snapshot: &metricspb.SummaryValue_Snapshot{
+											PercentileValues: nil,
+										},
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
 	}
-	gotG1 := m1.Metrics[0]
-	ts1 := gotG1.Timeseries[0].Points[0].Timestamp
-	// set this timestamp to wantG1
-	wantG1.Timeseries[0].Points[0].Timestamp = ts1
-	doCompare("scrape1", t, wantG1, gotG1)
+
+	doCompare("scrape1", t, want1, m1)
 
 	// verify the 2nd metricData
 	m2 := mds[1]
 	ts2 := m2.Metrics[0].Timeseries[0].Points[0].Timestamp
 
-	want2 := &internaldata.MetricsData{
+	want2 := &agentmetricspb.ExportMetricsServiceRequest{
 		Node:     td.node,
 		Resource: td.resource,
 		Metrics: []*metricspb.Metric{
@@ -1258,13 +1555,13 @@ func verifyTarget3(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 												},
 											},
 										},
-										Count: 1000,
-										Sum:   100,
+										Count: 14003,
+										Sum:   50100,
 										Buckets: []*metricspb.DistributionValue_Bucket{
+											{Count: 11000},
 											{Count: 1000},
-											{Count: 0},
-											{Count: 0},
-											{Count: 0},
+											{Count: 1001},
+											{Count: 1002},
 										},
 									},
 								},
@@ -1290,8 +1587,8 @@ func verifyTarget3(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 								Timestamp: ts2,
 								Value: &metricspb.Point_SummaryValue{
 									SummaryValue: &metricspb.SummaryValue{
-										Sum:   &wrappers.DoubleValue{Value: 100},
-										Count: &wrappers.Int64Value{Value: 50},
+										Sum:   &wrappers.DoubleValue{Value: 8100},
+										Count: &wrappers.Int64Value{Value: 950},
 										Snapshot: &metricspb.SummaryValue_Snapshot{
 											PercentileValues: []*metricspb.SummaryValue_Snapshot_ValueAtPercentile{
 												{
@@ -1329,8 +1626,8 @@ func verifyTarget3(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 								Timestamp: ts2,
 								Value: &metricspb.Point_SummaryValue{
 									SummaryValue: &metricspb.SummaryValue{
-										Sum:   &wrappers.DoubleValue{Value: 1},
-										Count: &wrappers.Int64Value{Value: 5},
+										Sum:   &wrappers.DoubleValue{Value: 101},
+										Count: &wrappers.Int64Value{Value: 55},
 										Snapshot: &metricspb.SummaryValue_Snapshot{
 											PercentileValues: nil,
 										},
@@ -1404,7 +1701,7 @@ func verifyTarget3(t *testing.T, td *testData, mds []internaldata.MetricsData) {
 		},
 	}
 
-	doCompare("scrape2", t, want2, &m2)
+	doCompare("scrape2", t, want2, m2)
 }
 
 // TestEndToEnd  end to end test executor
@@ -1476,9 +1773,9 @@ process_start_time_seconds 400.8
 
 var startTimeMetricPageStartTimestamp = &timestamppb.Timestamp{Seconds: 400, Nanos: 800000000}
 
-const numStartTimeMetricPageTimeseries = 6
+const numStartTimeMetricPageTimeseries = 11
 
-func verifyStartTimeMetricPage(t *testing.T, _ *testData, mds []internaldata.MetricsData) {
+func verifyStartTimeMetricPage(t *testing.T, _ *testData, mds []*agentmetricspb.ExportMetricsServiceRequest) {
 	numTimeseries := 0
 	for _, cmd := range mds {
 		for _, metric := range cmd.Metrics {
@@ -1530,13 +1827,15 @@ func testEndToEnd(t *testing.T, targets []*testData, useStartTimeMetric bool) {
 	metrics := cms.AllMetrics()
 
 	// split and store results by target name
-	results := make(map[string][]internaldata.MetricsData)
-	for _, m := range metrics {
-		ocmds := internaldata.MetricsToOC(m)
-		for _, ocmd := range ocmds {
+	results := make(map[string][]*agentmetricspb.ExportMetricsServiceRequest)
+	for _, md := range metrics {
+		rms := md.ResourceMetrics()
+		for i := 0; i < rms.Len(); i++ {
+			ocmd := &agentmetricspb.ExportMetricsServiceRequest{}
+			ocmd.Node, ocmd.Resource, ocmd.Metrics = internaldata.ResourceMetricsToOC(rms.At(i))
 			result, ok := results[ocmd.Node.ServiceInfo.Name]
 			if !ok {
-				result = make([]internaldata.MetricsData, 0)
+				result = make([]*agentmetricspb.ExportMetricsServiceRequest, 0)
 			}
 			results[ocmd.Node.ServiceInfo.Name] = append(result, ocmd)
 		}
@@ -1547,7 +1846,9 @@ func testEndToEnd(t *testing.T, targets []*testData, useStartTimeMetric bool) {
 
 	// loop to validate outputs for each targets
 	for _, target := range targets {
-		target.validateFunc(t, target, results[target.name])
+		t.Run(target.name, func(t *testing.T) {
+			target.validateFunc(t, target, results[target.name])
+		})
 	}
 }
 
@@ -1621,13 +1922,15 @@ func testEndToEndRegex(t *testing.T, targets []*testData, useStartTimeMetric boo
 	metrics := cms.AllMetrics()
 
 	// split and store results by target name
-	results := make(map[string][]internaldata.MetricsData)
-	for _, m := range metrics {
-		ocmds := internaldata.MetricsToOC(m)
-		for _, ocmd := range ocmds {
+	results := make(map[string][]*agentmetricspb.ExportMetricsServiceRequest)
+	for _, md := range metrics {
+		rms := md.ResourceMetrics()
+		for i := 0; i < rms.Len(); i++ {
+			ocmd := &agentmetricspb.ExportMetricsServiceRequest{}
+			ocmd.Node, ocmd.Resource, ocmd.Metrics = internaldata.ResourceMetricsToOC(rms.At(i))
 			result, ok := results[ocmd.Node.ServiceInfo.Name]
 			if !ok {
-				result = make([]internaldata.MetricsData, 0)
+				result = make([]*agentmetricspb.ExportMetricsServiceRequest, 0)
 			}
 			results[ocmd.Node.ServiceInfo.Name] = append(result, ocmd)
 		}
