@@ -18,7 +18,7 @@ require (
 	github.com/golang/groupcache v0.0.0-20200121045136-8c9f03a8e57e
 	github.com/golang/protobuf v1.5.2
 	github.com/golang/snappy v0.0.3
-	github.com/google/go-cmp v0.5.5
+	github.com/google/go-cmp v0.5.7
 	github.com/google/uuid v1.2.0
 	github.com/gorilla/mux v1.8.0
 	github.com/grpc-ecosystem/grpc-gateway v1.16.0
@@ -33,7 +33,7 @@ require (
 	github.com/rs/cors v1.7.0
 	github.com/shirou/gopsutil v3.21.4+incompatible
 	github.com/soheilhy/cmux v0.1.5
-	github.com/spf13/cast v1.3.1
+	github.com/spf13/cast v1.5.0
 	github.com/spf13/cobra v1.1.3
 	github.com/spf13/viper v1.7.1
 	github.com/stretchr/testify v1.7.0
